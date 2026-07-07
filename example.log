@@ -1,0 +1,13 @@
+2024-01-15 10:23:45 INFO Starting application...
+2024-01-15 10:23:46 INFO Loading configuration from /etc/app/config.yaml
+2024-01-15 10:23:47 WARN High memory usage detected: 85%
+2024-01-15 10:23:48 ERROR OOMKilled: container exceeded memory limit of 512Mi
+2024-01-15 10:23:49 INFO Container restarting...
+2024-01-15 10:23:50 ERROR CrashLoopBackOff: Back-off restarting failed container
+2024-01-15 10:23:51 INFO Attempting to connect to database...
+2024-01-15 10:23:52 ERROR connection refused: unable to reach db-service:5432
+2024-01-15 10:23:53 WARN Liveness probe failed: HTTP probe failed with statuscode: 503
+2024-01-15 10:23:54 ERROR permission denied: cannot access /var/data
+2024-01-15 10:23:55 INFO Retrying in 5 seconds...
+2024-01-15 10:23:56 ERROR timeout: request to upstream service timed out after 30s
+2024-01-15 10:23:57 INFO Application shutdown complete
