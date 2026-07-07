@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>K8s Log Doctor - 演示</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 40px 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+        
+        .header h1 {
+            font-size: 48px;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .header p {
+            font-size: 20px;
+            opacity: 0.9;
+        }
+        
+        .terminal {
+            background: #1e1e1e;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            overflow: hidden;
+            margin-bottom: 30px;
+        }
+        
+        .terminal-header {
+            background: #2d2d2d;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .terminal-button {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+        
+        .terminal-button.red { background: #ff5f56; }
+        .terminal-button.yellow { background: #ffbd2e; }
+        .terminal-button.green { background: #27c93f; }
+        
+        .terminal-title {
+            color: #999;
+            font-size: 13px;
+            margin-left: 10px;
+        }
+        
+        .terminal-content {
+            padding: 20px;
+            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            color: #d4d4d4;
+            overflow-x: auto;
+        }
+        
+        .prompt {
+            color: #4ec9b0;
+        }
+        
+        .command {
+            color: #dcdcaa;
+        }
+        
+        .output {
+            color: #d4d4d4;
+            margin-top: 10px;
+        }
+        
+        .separator {
+            color: #808080;
+        }
+        
+        .emoji {
+            font-size: 16px;
+        }
+        
+        .critical {
+            color: #f48771;
+            font-weight: bold;
+        }
+        
+        .high {
+            color: #e5c07b;
+            font-weight: bold;
+        }
+        
+        .medium {
+            color: #61afef;
+            font-weight: bold;
+        }
+        
+        .success {
+            color: #98c379;
+        }
+        
+        .info {
+            color: #c678dd;
+        }
+        
+        .suggestion {
+            color: #56b6c2;
+        }
+        
+        .log-line {
+            color: #abb2bf;
+            font-size: 12px;
+            margin-left: 20px;
+        }
+        
+        .demo-section {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .demo-section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 28px;
+        }
+        
+        .demo-section h3 {
+            color: #667eea;
+            margin: 20px 0 10px 0;
+            font-size: 20px;
+        }
+        
+        .demo-section p {
+            color: #666;
+            line-height: 1.8;
+            margin-bottom: 15px;
+        }
+        
+        .code-block {
+            background: #f5f5f5;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin: 15px 0;
+            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+            font-size: 14px;
+            color: #333;
+            overflow-x: auto;
+        }
+        
+        .cta {
+            text-align: center;
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .cta h2 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        
+        .cta-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 40px;
+            border-radius: 50px;
+            text-decoration: none;
+            font-size: 18px;
+            font-weight: bold;
+            margin: 10px;
+            transition: transform 0.2s;
+        }
+        
+        .cta-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+        
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin: 30px 0;
+        }
+        
+        .feature {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .feature-icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+        
+        .feature h3 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .feature p {
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔍 K8s Log Doctor</h1>
+            <p>智能 Kubernetes 日志诊断工具</p>
+        </div>
+        
+        <div class="demo-section">
+            <h2>✨ 核心功能</h2>
+            <div class="features">
+                <div class="feature">
+                    <div class="feature-icon">🎯</div>
+                    <h3>智能识别</h3>
+                    <p>10+ 种常见 K8s 错误模式自动识别</p>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">📊</div>
+                    <h3>分级诊断</h3>
+                    <p>CRITICAL/HIGH/MEDIUM/LOW 四级分类</p>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">💡</div>
+                    <h3>修复建议</h3>
+                    <p>针对每个问题提供具体解决方案</p>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">⚡</div>
+                    <h3>开箱即用</h3>
+                    <p>零配置，单文件即可运行</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="terminal">
+            <div class="terminal-header">
+                <div class="terminal-button red"></div>
+                <div class="terminal-button yellow"></div>
+                <div class="terminal-button green"></div>
+                <div class="terminal-title">Terminal - k8s-log-doctor</div>
+            </div>
+            <div class="terminal-content">
+                <div><span class="prompt">$</span> <span class="command">k8s-log-doctor -f example.log</span></div>
+                <div class="output">
+                    <div class="separator">============================================================</div>
+                    <div><span class="emoji">🔍</span> K8s Log Doctor 诊断报告</div>
+                    <div class="separator">============================================================</div>
+                    <br>
+                    <div>发现 <span class="critical">6</span> 个问题:</div>
+                    <br>
+                    <div><span class="emoji">🔴</span> <span class="critical">[1] OOMKilled</span></div>
+                    <div>   严重程度: <span class="critical">CRITICAL</span></div>
+                    <div>   问题描述: 容器因内存不足被杀死</div>
+                    <div>   置信度: 95%</div>
+                    <br>
+                    <div>   <span class="emoji">💡</span> <span class="suggestion">建议:</span></div>
+                    <div>      1. 增加Pod的memory limit</div>
+                    <div>      2. 检查应用是否有内存泄漏</div>
+                    <div>      3. 优化应用内存使用</div>
+                    <div>      4. 考虑使用HPA自动扩缩容</div>
+                    <br>
+                    <div>   <span class="emoji">📝</span> 相关日志:</div>
+                    <div class="log-line">2024-01-15 10:23:48 ERROR OOMKilled: container exceeded memory limit</div>
+                    <br>
+                    <div><span class="emoji">🔴</span> <span class="critical">[2] CrashLoopBackOff</span></div>
+                    <div>   严重程度: <span class="critical">CRITICAL</span></div>
+                    <div>   问题描述: 容器反复崩溃重启</div>
+                    <div>   置信度: 95%</div>
+                    <br>
+                    <div><span class="emoji">🟠</span> <span class="high">[3] LivenessProbeFailed</span></div>
+                    <div>   严重程度: <span class="high">HIGH</span></div>
+                    <div>   问题描述: 健康检查失败</div>
+                    <div>   置信度: 85%</div>
+                    <br>
+                    <div><span class="emoji">🟠</span> <span class="high">[4] NetworkError</span></div>
+                    <div>   严重程度: <span class="high">HIGH</span></div>
+                    <div>   问题描述: 网络连接问题</div>
+                    <div>   置信度: 80%</div>
+                    <br>
+                    <div><span class="emoji">🟠</span> <span class="high">[5] PermissionDenied</span></div>
+                    <div>   严重程度: <span class="high">HIGH</span></div>
+                    <div>   问题描述: 权限不足</div>
+                    <div>   置信度: 85%</div>
+                    <br>
+                    <div><span class="emoji">🟡</span> <span class="medium">[6] Timeout</span></div>
+                    <div>   严重程度: <span class="medium">MEDIUM</span></div>
+                    <div>   问题描述: 请求超时</div>
+                    <div>   置信度: 70%</div>
+                    <br>
+                    <div class="separator">============================================================</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>🚀 快速开始</h2>
+            
+            <h3>安装</h3>
+            <div class="code-block">
+# 方式1: 直接下载<br>
+curl -O https://raw.githubusercontent.com/Richardoris/k8s-log-doctor/main/k8s_log_doctor.py<br>
+chmod +x k8s_log_doctor.py<br>
+<br>
+# 方式2: pip 安装（推荐）<br>
+pip install k8s-log-doctor
+            </div>
+            
+            <h3>使用</h3>
+            <div class="code-block">
+# 分析 Pod 日志<br>
+k8s-log-doctor -p my-pod -n production<br>
+<br>
+# 分析日志文件<br>
+k8s-log-doctor -f /var/log/pod.log<br>
+<br>
+# 从标准输入读取<br>
+kubectl logs my-pod | k8s-log-doctor
+            </div>
+        </div>
+        
+        <div class="cta">
+            <h2>🎁 开源免费</h2>
+            <p style="color: #666; margin-bottom: 30px;">
+                K8s Log Doctor 完全开源，欢迎 Star、Fork、提 Issue！
+            </p>
+            <a href="https://github.com/Richardoris/k8s-log-doctor" class="cta-button">
+                ⭐ GitHub 仓库
+            </a>
+        </div>
+    </div>
+</body>
+</html>
