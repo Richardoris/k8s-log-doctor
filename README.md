@@ -9,7 +9,8 @@
 - 💡 **修复建议** - 针对每个问题提供具体的解决方案
 - 🔌 **多种输入方式** - 支持文件、kubectl、标准输入
 - 📦 **开箱即用** - 零配置，单文件即可运行
-- 🎨 **多格式输出** - 支持文本和 JSON 格式
+- 🎨 **多格式输出** - 支持文本、JSON 和结构化 JSON 格式
+- 🤖 **CI 友好** - 标准退出码，适合自动化流水线集成
 
 ## 🚀 快速开始
 
@@ -41,6 +42,9 @@ k8s-log-doctor -f pod.log -o json
 
 # 5. 指定容器（多容器 Pod）
 k8s-log-doctor -p my-pod -c my-container
+
+# 6. 结构化 JSON 输出（含摘要统计，CI 友好）
+k8s-log-doctor -f pod.log --json
 ```
 
 ## 📋 支持的错误模式
@@ -58,7 +62,9 @@ k8s-log-doctor -p my-pod -c my-container
 | Timeout | 🟡 MEDIUM | 请求超时 |
 | PanicError | 🔴 CRITICAL | 程序崩溃 |
 
-## 📊 输出示例
+## 📊 输出格式
+
+### 文本输出（默认）
 
 ```
 ============================================================
@@ -95,23 +101,159 @@ k8s-log-doctor -p my-pod -c my-container
 ============================================================
 ```
 
+### 结构化 JSON 输出（`--json`）
+
+使用 `--json` 参数输出包含完整摘要统计的结构化 JSON，适合程序化处理和 CI 集成：
+
+```bash
+k8s-log-doctor -f pod.log --json
+```
+
+输出示例：
+
+```json
+{
+  "checks": [
+    {
+      "pattern_name": "OOMKilled",
+      "severity": "critical",
+      "description": "容器因内存不足被杀死",
+      "suggestion": "1. 增加Pod的memory limit\n2. 检查应用是否有内存泄漏\n3. 优化应用内存使用\n4. 考虑使用HPA自动扩缩容",
+      "matched_lines": [
+        "2024-01-15 10:23:45 OOMKilled: container exceeded memory limit"
+      ],
+      "confidence": 0.95
+    },
+    {
+      "pattern_name": "LivenessProbeFailed",
+      "severity": "high",
+      "description": "健康检查失败",
+      "suggestion": "1. 检查应用是否正常启动\n2. 调整probe的timeout和period\n3. 验证健康检查端点\n4. 增加initialDelaySeconds",
+      "matched_lines": [
+        "2024-01-15 10:23:50 Liveness probe failed: connection refused"
+      ],
+      "confidence": 0.85
+    }
+  ],
+  "status": "issues_found",
+  "error_message": null,
+  "summary": {
+    "total_checks": 2,
+    "issues_count": 2,
+    "severity_breakdown": {
+      "critical": 1,
+      "high": 1,
+      "medium": 0,
+      "low": 0,
+      "info": 0
+    }
+  }
+}
+```
+
+**字段说明：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `checks` | array | 检查项列表，每项包含 `pattern_name`、`severity`、`description`、`suggestion`、`matched_lines`、`confidence` |
+| `status` | string | 总体状态：`ok`（无问题）、`issues_found`（发现 CRITICAL/HIGH 问题）、`error`（工具出错） |
+| `error_message` | string\|null | 错误信息，仅在工具自身出错时有值 |
+| `summary` | object | 摘要统计，包含 `total_checks`、`issues_count`、`severity_breakdown` |
+
+> **注意：** `-o json` 仍然可用，输出为旧版数组格式（向后兼容）。`--json` 是新增的结构化输出模式。
+
+## 🔢 退出码
+
+k8s-log-doctor 使用 CI 友好的标准退出码：
+
+| 退出码 | 含义 | 说明 |
+|--------|------|------|
+| `0` | 无问题 | 未发现 CRITICAL 或 HIGH 级别问题（MEDIUM/LOW/INFO 不影响退出码） |
+| `1` | 发现问题 | 存在 CRITICAL 或 HIGH 级别问题 |
+| `2` | 工具错误 | 文件不存在、参数错误、未预期异常等工具自身错误 |
+
+使用 `--json` 时，即使工具出错（退出码 2），也会输出合法的 JSON（`status: "error"`），便于程序化处理。
+
 ## 🔧 高级用法
 
 ### 与 CI/CD 集成
 
+#### GitHub Actions
+
 ```yaml
-# GitHub Actions 示例
-- name: Analyze logs
-  run: |
-    kubectl logs my-pod | k8s-log-doctor -o json > report.json
-    
-- name: Check for critical issues
-  run: |
-    k8s-log-doctor -f logs.txt
-    if [ $? -eq 2 ]; then
-      echo "Critical issues found!"
-      exit 1
-    fi
+name: Log Diagnosis
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'  # 每6小时运行一次
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Download k8s-log-doctor
+        run: |
+          curl -O https://raw.githubusercontent.com/yourusername/k8s-log-doctor/main/k8s_log_doctor.py
+          chmod +x k8s_log_doctor.py
+
+      - name: Analyze pod logs
+        run: |
+          # 获取所有 Pod 并分析日志
+          for pod in $(kubectl get pods -n production -o name); do
+            echo "=== Analyzing ${pod} ==="
+            kubectl logs ${pod} -n production --tail=500 | \
+              python k8s_log_doctor.py --json > diagnosis.json
+            
+            # 使用退出码判断
+            EXIT_CODE=$?
+            if [ $EXIT_CODE -eq 1 ]; then
+              echo "::warning::Severe issues found in ${pod}"
+            elif [ $EXIT_CODE -eq 2 ]; then
+              echo "::error::Tool error while analyzing ${pod}"
+            fi
+          done
+
+      - name: Check for critical issues
+        run: |
+          # 分析指定 Pod 并在发现问题时阻断流水线
+          kubectl logs my-critical-pod -n production --tail=1000 | \
+            python k8s_log_doctor.py --json | tee diagnosis.json
+          
+          # 根据退出码决定是否阻断
+          EXIT_CODE=${PIPESTATUS[1]}
+          if [ $EXIT_CODE -eq 1 ]; then
+            echo "❌ Critical issues detected! Blocking deployment."
+            exit 1
+          fi
+```
+
+#### GitLab CI
+
+```yaml
+log-diagnosis:
+  stage: test
+  script:
+    - curl -O https://raw.githubusercontent.com/yourusername/k8s-log-doctor/main/k8s_log_doctor.py
+    - kubectl logs $TARGET_POD -n $NAMESPACE --tail=1000 | 
+        python k8s_log_doctor.py --json > diagnosis.json
+    - |
+      EXIT_CODE=$?
+      if [ $EXIT_CODE -eq 1 ]; then
+        echo "Severe issues found, failing pipeline"
+        exit 1
+      fi
+  artifacts:
+    paths:
+      - diagnosis.json
+    when: always
+  allow_failure: false
 ```
 
 ### 批量分析
@@ -122,6 +264,16 @@ for pod in $(kubectl get pods -o name); do
   echo "Analyzing $pod..."
   k8s-log-doctor -p ${pod#pod/} -n production
 done
+```
+
+## 🧪 测试
+
+```bash
+# 安装测试依赖
+pip install pytest
+
+# 运行全部测试
+pytest tests/ -v
 ```
 
 ## 💰 Pro 版本
