@@ -1,0 +1,150 @@
+name: PR Auto Review
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Agent Review and Poll for Result
+        id: agent
+        env:
+          AGENT_API_KEY: ${{ secrets.AGENT_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          SESSION_ID: ${{ github.repository }}-pr-${{ github.event.pull_request.number }}
+        run: |
+          API_URL="http://gateway.at-cn-9yo4wornw01.agentteams.aliyuncs.com/api/console/chat"
+          MAX_POLLS=40
+          POLL_INTERVAL=30
+
+          # Step 1: Send initial review request (triggers Task creation)
+          echo "=== Sending initial review request ==="
+          curl -sN -X POST "$API_URL" \
+            -H "Content-Type: application/json" \
+            -H "Accept: text/event-stream" \
+            -H "X-Agent-Id: default" \
+            -H "x-api-key: ${AGENT_API_KEY}" \
+            --max-time 300 \
+            -d "$(jq -n \
+              --arg prompt "请审查以下 Pull Request：\n- 仓库: ${REPO}\n- PR #${PR_NUMBER}: ${PR_TITLE}\n- 链接: ${PR_URL}\n- 作者: ${AUTHOR}\n- 分支: ${HEAD_REF} → ${BASE_REF}\n\n重要：请先立即回复 REVIEW_IN_PROGRESS 表示已收到请求，然后再开始创建Task和分配Worker进行审查，注意，无论任务简单与否，你都必须创建Task，并且分配给你的Worker执行任务，任务评审人为你团队里的Human管理员（Coordinator），而不是你自己。\n审查全部完成后，请返回完整审查结果，并在最后一行明确输出：MERGE_DECISION: APPROVE 或 MERGE_DECISION: REQUEST_CHANGES" \
+              --arg session "$SESSION_ID" \
+              '{input: [{ role: "user", content: [{ type: "text", text: $prompt }] }], session_id: $session, user_id: "default", channel: "console", stream: true}')" > /tmp/sse_response.txt || true
+
+          # Parse initial response
+          python3 -c "
+          import json
+          text = ''
+          with open('/tmp/sse_response.txt') as f:
+              for line in f:
+                  line = line.strip()
+                  if not line.startswith('data: '): continue
+                  try:
+                      d = json.loads(line[6:])
+                      if d.get('object') == 'content' and d.get('status') == 'completed' and d.get('text'):
+                          text = d['text']
+                  except: pass
+          print(f'Initial reply: {text[:200]}')
+          "
+
+          # Step 2: Poll for final result
+          echo ""
+          echo "=== Polling for review result (max ${MAX_POLLS} attempts, ${POLL_INTERVAL}s interval) ==="
+
+          FINAL_REVIEW=""
+          DECISION="UNKNOWN"
+
+          for i in $(seq 1 $MAX_POLLS); do
+            echo "Poll attempt $i/$MAX_POLLS..."
+            sleep $POLL_INTERVAL
+
+            curl -sN -X POST "$API_URL" \
+              -H "Content-Type: application/json" \
+              -H "Accept: text/event-stream" \
+              -H "X-Agent-Id: default" \
+              -H "x-api-key: ${AGENT_API_KEY}" \
+              --max-time 300 \
+              -d "$(jq -n \
+                --arg session "$SESSION_ID" \
+                '{input: [{ role: "user", content: [{ type: "text", text: "你的PR审查完成了吗？如果已完成，请返回完整的审查结果，并在最后一行输出 MERGE_DECISION: APPROVE 或 MERGE_DECISION: REQUEST_CHANGES。如果还在进行中，请回复：REVIEW_IN_PROGRESS" }] }], session_id: $session, user_id: "default", channel: "github-cli", stream: true}')" > /tmp/sse_poll.txt || true
+
+            # Parse poll response
+            RESULT=$(python3 -c "
+          import json
+          text = ''
+          with open('/tmp/sse_poll.txt') as f:
+              for line in f:
+                  line = line.strip()
+                  if not line.startswith('data: '): continue
+                  try:
+                      d = json.loads(line[6:])
+                      if d.get('object') == 'content' and d.get('status') == 'completed' and d.get('text'):
+                          text = d['text']
+                  except: pass
+          print(text)
+          ")
+
+            echo "  Reply: ${RESULT:0:100}..."
+
+            # Check if review is complete
+            if echo "$RESULT" | grep -q "MERGE_DECISION: APPROVE"; then
+              FINAL_REVIEW="$RESULT"
+              DECISION="APPROVE"
+              echo "  ✅ Review completed: APPROVE"
+              break
+            elif echo "$RESULT" | grep -q "MERGE_DECISION: REQUEST_CHANGES"; then
+              FINAL_REVIEW="$RESULT"
+              DECISION="REQUEST_CHANGES"
+              echo "  ⚠️ Review completed: REQUEST_CHANGES"
+              break
+            elif echo "$RESULT" | grep -q "REVIEW_IN_PROGRESS"; then
+              echo "  ⏳ Still in progress, continuing to poll..."
+            else
+              # Might be a complete review without the marker
+              if [ ${#RESULT} -gt 100 ]; then
+                FINAL_REVIEW="$RESULT"
+                DECISION="UNKNOWN"
+                echo "  ⚠️ Got substantial reply but no MERGE_DECISION marker"
+                break
+              fi
+              echo "  ⏳ Waiting..."
+            fi
+          done
+
+          # Fallback
+          if [ -z "$FINAL_REVIEW" ]; then
+            FINAL_REVIEW="⚠️ Agent 审查超时（$((MAX_POLLS * POLL_INTERVAL))秒），请手动检查。"
+            DECISION="UNKNOWN"
+          fi
+
+          echo "$FINAL_REVIEW" > /tmp/review.md
+          echo "$DECISION" > /tmp/merge_decision.txt
+          echo ""
+          echo "=== Final: Decision=$DECISION, Review length=${#FINAL_REVIEW} ==="
+
+      - name: Post Review Comment to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const review = fs.readFileSync('/tmp/review.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `🤖 **AI Code Review**\n\n${review}`
+            });
+
+      # Auto-merge is handled by the Team Leader via GitHub MCP
+      # after review completion and APPROVE decision.
