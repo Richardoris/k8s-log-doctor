@@ -4,14 +4,14 @@ K8s Log Doctor - 智能Kubernetes日志诊断工具
 自动识别常见错误模式，给出修复建议
 
 作者: 艾玛（AI助手）
-版本: 0.1.0
+版本: 0.2.0
 """
 
 import re
 import sys
 import json
 import argparse
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum
 
@@ -167,13 +167,9 @@ class LogAnalyzer:
     
     def analyze_from_file(self, filepath: str) -> List[DiagnosisResult]:
         """从文件分析日志"""
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                logs = f.readlines()
-            return self.pattern_analyzer.analyze(logs)
-        except Exception as e:
-            print(f"❌ 读取文件失败: {e}", file=sys.stderr)
-            return []
+        with open(filepath, 'r', encoding='utf-8') as f:
+            logs = f.readlines()
+        return self.pattern_analyzer.analyze(logs)
     
     def analyze_from_stdin(self) -> List[DiagnosisResult]:
         """从标准输入分析日志"""
@@ -189,38 +185,16 @@ class LogAnalyzer:
         if container:
             cmd.extend(["-c", container])
         
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode != 0:
-                print(f"❌ kubectl命令失败: {result.stderr}", file=sys.stderr)
-                return []
-            
-            logs = result.stdout.splitlines()
-            return self.pattern_analyzer.analyze(logs)
-        except subprocess.TimeoutExpired:
-            print("❌ kubectl命令超时", file=sys.stderr)
-            return []
-        except Exception as e:
-            print(f"❌ 执行失败: {e}", file=sys.stderr)
-            return []
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            raise RuntimeError(f"kubectl命令失败: {result.stderr}")
+        
+        logs = result.stdout.splitlines()
+        return self.pattern_analyzer.analyze(logs)
 
 
-def format_output(results: List[DiagnosisResult], output_format: str = "text") -> str:
-    """格式化输出结果"""
-    if output_format == "json":
-        return json.dumps([
-            {
-                "pattern": r.pattern_name,
-                "severity": r.severity.value,
-                "description": r.description,
-                "suggestion": r.suggestion,
-                "matched_lines": r.matched_lines,
-                "confidence": r.confidence
-            }
-            for r in results
-        ], indent=2, ensure_ascii=False)
-    
-    # 文本格式
+def format_text_output(results: List[DiagnosisResult]) -> str:
+    """格式化文本输出结果"""
     if not results:
         return "✅ 未发现明显问题"
     
@@ -259,6 +233,82 @@ def format_output(results: List[DiagnosisResult], output_format: str = "text") -
     return "\n".join(output)
 
 
+def format_legacy_json_output(results: List[DiagnosisResult]) -> str:
+    """格式化旧版 -o json 输出（保持向后兼容）"""
+    return json.dumps([
+        {
+            "pattern": r.pattern_name,
+            "severity": r.severity.value,
+            "description": r.description,
+            "suggestion": r.suggestion,
+            "matched_lines": r.matched_lines,
+            "confidence": r.confidence
+        }
+        for r in results
+    ], indent=2, ensure_ascii=False)
+
+
+def format_structured_json_output(results: List[DiagnosisResult], error_message: Optional[str] = None) -> str:
+    """格式化 --json 结构化输出"""
+    # 构建 checks 列表
+    checks = []
+    for r in results:
+        checks.append({
+            "pattern_name": r.pattern_name,
+            "severity": r.severity.value,
+            "description": r.description,
+            "suggestion": r.suggestion,
+            "matched_lines": r.matched_lines,
+            "confidence": r.confidence
+        })
+
+    # 判断总体状态
+    if error_message:
+        status = "error"
+    elif any(r.severity in (Severity.CRITICAL, Severity.HIGH) for r in results):
+        status = "issues_found"
+    else:
+        status = "ok"
+
+    # 构建摘要统计
+    severity_breakdown = {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "info": 0
+    }
+    for r in results:
+        severity_breakdown[r.severity.value] += 1
+
+    summary = {
+        "total_checks": len(checks),
+        "issues_count": len(checks),
+        "severity_breakdown": severity_breakdown
+    }
+
+    structured = {
+        "checks": checks,
+        "status": status,
+        "error_message": error_message,
+        "summary": summary
+    }
+
+    return json.dumps(structured, indent=2, ensure_ascii=False)
+
+
+def format_output(results: List[DiagnosisResult], output_format: str = "text") -> str:
+    """格式化输出结果（向后兼容入口）"""
+    if output_format == "json":
+        return format_legacy_json_output(results)
+    return format_text_output(results)
+
+
+def has_severe_issues(results: List[DiagnosisResult]) -> bool:
+    """判断是否存在 CRITICAL 或 HIGH 级别问题"""
+    return any(r.severity in (Severity.CRITICAL, Severity.HIGH) for r in results)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="K8s Log Doctor - 智能Kubernetes日志诊断工具",
@@ -276,6 +326,9 @@ def main():
   
   # 输出JSON格式
   k8s-log-doctor -f pod.log -o json
+  
+  # 结构化JSON输出（含摘要统计，CI友好）
+  k8s-log-doctor -f pod.log --json
         """
     )
     
@@ -286,31 +339,60 @@ def main():
     parser.add_argument("-t", "--tail", type=int, default=1000, help="获取最近N行日志 (默认: 1000)")
     parser.add_argument("-o", "--output", choices=["text", "json"], default="text", 
                        help="输出格式 (默认: text)")
+    parser.add_argument("--json", action="store_true", dest="structured_json",
+                       help="输出结构化JSON（含checks/status/error_message/summary字段，CI友好）")
     
     args = parser.parse_args()
     
-    analyzer = LogAnalyzer()
-    
-    # 确定日志来源
-    if args.file:
-        results = analyzer.analyze_from_file(args.file)
-    elif args.pod:
-        results = analyzer.analyze_from_kubectl(
-            args.pod, args.namespace, args.container, args.tail
-        )
-    elif not sys.stdin.isatty():
-        results = analyzer.analyze_from_stdin()
-    else:
-        parser.print_help()
-        sys.exit(1)
+    # --json 模式下的错误处理包装
+    error_message = None
+    results = []
+
+    try:
+        analyzer = LogAnalyzer()
+        
+        # 确定日志来源
+        if args.file:
+            results = analyzer.analyze_from_file(args.file)
+        elif args.pod:
+            results = analyzer.analyze_from_kubectl(
+                args.pod, args.namespace, args.container, args.tail
+            )
+        elif not sys.stdin.isatty():
+            results = analyzer.analyze_from_stdin()
+        else:
+            parser.print_help()
+            if args.structured_json:
+                error_output = format_structured_json_output([], error_message="未提供日志输入来源")
+                print(error_output)
+                sys.exit(2)
+            sys.exit(2)
+    except FileNotFoundError as e:
+        if args.structured_json:
+            error_output = format_structured_json_output([], error_message=str(e))
+            print(error_output)
+            sys.exit(2)
+        print(f"❌ 读取文件失败: {e}", file=sys.stderr)
+        sys.exit(2)
+    except Exception as e:
+        if args.structured_json:
+            error_output = format_structured_json_output([], error_message=str(e))
+            print(error_output)
+            sys.exit(2)
+        print(f"❌ 执行失败: {e}", file=sys.stderr)
+        sys.exit(2)
     
     # 输出结果
-    print(format_output(results, args.output))
+    if args.structured_json:
+        print(format_structured_json_output(results))
+    else:
+        print(format_output(results, args.output))
     
-    # 根据严重程度返回退出码
-    if any(r.severity == Severity.CRITICAL for r in results):
-        sys.exit(2)
-    elif any(r.severity == Severity.HIGH for r in results):
+    # CI 友好的退出码
+    # 0 = 无问题（没有 CRITICAL 或 HIGH 级别问题）
+    # 1 = 发现问题（存在 CRITICAL 或 HIGH 级别问题）
+    # 2 = 工具自身错误（已在上方 except 中处理）
+    if has_severe_issues(results):
         sys.exit(1)
     else:
         sys.exit(0)
