@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="k8s-log-doctor",
-    version="0.1.0",
+    version="0.2.0",
     author="艾玛",
     author_email="ai@example.com",
     description="智能 Kubernetes 日志诊断工具",
