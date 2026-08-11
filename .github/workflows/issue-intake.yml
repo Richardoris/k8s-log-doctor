@@ -1,0 +1,81 @@
+name: Issue Intake (AgentTeams)
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  notify-tl:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Forward issue to AgentTeams TL
+        env:
+          AGENT_API_KEY: ${{ secrets.AGENT_API_KEY }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          REPO: ${{ github.repository }}
+          SESSION_ID: ${{ github.repository }}-issue-${{ github.event.issue.number }}
+        run: |
+          python3 <<'PYEOF'
+          import json, os, urllib.request
+
+          api_url = "http://gateway.at-cn-9yo4wornw01.agentteams.aliyuncs.com/tl/api/console/chat"
+          repo, num = os.environ["REPO"], os.environ["ISSUE_NUMBER"]
+          prompt = f"""【GitHub Issue 研发流水线】收到新的 GitHub Issue，请按研发流水线处理。
+
+          - 仓库: {repo}
+          - Issue #{num}: {os.environ['ISSUE_TITLE']}
+          - 链接: {os.environ['ISSUE_URL']}
+          - 提交人: {os.environ['ISSUE_AUTHOR']}
+
+          Issue 原文:
+          {(os.environ.get('ISSUE_BODY') or '')[:4000]}
+
+          要求：
+          1. 请先立即回复「已受理」两个字，表示已收到请求；
+          2. 然后创建 Task 并调度你的 Worker 完成完整研发流水线（任务评审人为 Human 管理员 Coordinator）：
+             - 需求分析（issue 意图、验收标准）
+             - 方案设计（改动范围、分支策略）
+             - 开发：通过 github-mcp 读取仓库代码，创建分支 agentteam/issue-{num} 并提交变更
+             - Code Review / 安全 / 测试构建 / 部署风险 专项审查
+             - 通过 github-mcp 创建到 main 的 Pull Request，PR 描述包含 需求分析/方案设计/审查结论/测试结论 摘要
+          3. 约束：禁止直接合并 main；一切变更走 PR；不得硬编码密钥；保持向后兼容。
+          4. PR 创建完成后，用 github-mcp 在本 issue 下评论 PR 链接与摘要，等待人类在 GitHub 上最终确认（merge）。"""
+
+          payload = {
+              "input": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+              "session_id": os.environ["SESSION_ID"],
+              "user_id": "default",
+              "channel": "github-cli",
+              "stream": True,
+          }
+          req = urllib.request.Request(
+              api_url, data=json.dumps(payload).encode(),
+              headers={"Content-Type": "application/json",
+                       "Accept": "text/event-stream",
+                       "X-Agent-Id": "default",
+                       "x-api-key": os.environ["AGENT_API_KEY"]},
+              method="POST")
+          ack = ""
+          with urllib.request.urlopen(req, timeout=120) as resp:
+              for raw in resp:
+                  line = raw.decode(errors="replace").strip()
+                  if not line.startswith("data: "):
+                      continue
+                  try:
+                      d = json.loads(line[6:])
+                  except Exception:
+                      continue
+                  if d.get("object") == "content" and d.get("status") == "completed" and d.get("text"):
+                      ack = d["text"]
+                      break  # 首条完整回复到手即可（TL 后续异步建 Task）
+          print("TL ack:", ack[:300] if ack else "<empty>")
+          if not ack:
+              raise SystemExit("TL no reply within timeout")
+          PYEOF
