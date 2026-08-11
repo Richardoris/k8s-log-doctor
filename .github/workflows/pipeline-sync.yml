@@ -1,0 +1,200 @@
+name: Pipeline Sync to SLS
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install SLS SDK
+        run: pip install -q aliyun-log-python-sdk
+
+      - name: Snapshot pipeline state to SLS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLS_PROJECT: ${{ secrets.SLS_PROJECT }}
+          SLS_LOGSTORE: ${{ secrets.SLS_LOGSTORE }}
+          SLS_ENDPOINT: ${{ secrets.SLS_ENDPOINT }}
+          ALIYUN_ACCESS_KEY_ID: ${{ secrets.SLS_ACCESS_KEY_ID }}
+          ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.SLS_ACCESS_KEY_SECRET }}
+        run: |
+          python3 <<'PYEOF'
+          import json, os, re, time, urllib.request
+
+          REPO = os.environ["GITHUB_REPOSITORY"]
+          GH_HEADERS = {"Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                        "Accept": "application/vnd.github+json"}
+
+          STAGE_MAP = {
+              "developing": "开发中", "review": "审查中",
+              "changes_requested": "返工中", "approved_wait_merge": "待人工合并",
+              "merged": "已合并", "released": "已发布",
+              "closed": "已关闭", "issue_open": "需求待开发",
+          }
+
+          def gh(path):
+              req = urllib.request.Request(f"https://api.github.com/{path}", headers=GH_HEADERS)
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  return json.loads(r.read())
+
+          def _minutes(a, b):
+              if not a or not b:
+                  return ""
+              try:
+                  fmt = lambda s: time.mktime(time.strptime(s, "%Y-%m-%dT%H:%M:%SZ"))
+                  return str(int((fmt(b) - fmt(a)) / 60))
+              except Exception:
+                  return ""
+
+          def _scan_decisions(comments):
+              decisions, first_review, review_cnt, actors = [], "", 0, set()
+              for c in comments:
+                  body = c.get("body") or ""
+                  ts = c.get("created_at", "")
+                  if "MERGE_DECISION: APPROVE" in body:
+                      decisions.append((ts, "APPROVE"))
+                  elif "MERGE_DECISION: REQUEST_CHANGES" in body:
+                      decisions.append((ts, "REQUEST_CHANGES"))
+                  if ("审查" in body or "MERGE_DECISION" in body or "AI Code Review" in body) and not first_review:
+                      first_review = ts
+                  if "审查" in body or "review" in body.lower():
+                      review_cnt += 1
+                  for w in ["worker-pr-review", "worker-security-review",
+                            "worker-build-test-review", "worker-deployment-review",
+                            "worker-dev-backend", "worker-dev-frontend",
+                            "worker-dev-review", "worker-dev-ops"]:
+                      if w in body:
+                          actors.add(w)
+              return decisions, first_review, review_cnt, actors
+
+          issues = [i for i in gh(f"repos/{REPO}/issues?state=all&per_page=100")
+                    if "pull_request" not in i]
+          prs = gh(f"repos/{REPO}/pulls?state=all&per_page=100")
+          releases = gh(f"repos/{REPO}/releases?per_page=50")
+          branches = {b["name"] for b in gh(f"repos/{REPO}/branches?per_page=100")}
+          rel_times = sorted(r.get("published_at") or r.get("created_at", "") for r in releases)
+
+          issue_of_pr = {}
+          for p in prs:
+              txt = (p.get("title") or "") + " " + (p.get("body") or "")
+              n = None
+              if f"closes #{p.get('number')}" in txt or f"(#{p.get('number')})" in txt:
+                  n = p.get("number")
+              else:
+                  m = re.findall(r"#(\d+)", txt)
+                  if m:
+                      n = int(m[0])
+              if n:
+                  issue_of_pr[p["number"]] = n
+
+          records = []
+          pr_of_issue = {v: k for k, v in issue_of_pr.items()}
+
+          for p in prs:
+              pn = p["number"]
+              issue_n = issue_of_pr.get(pn)
+              issue = next((i for i in issues if i["number"] == issue_n), None)
+              comments = gh(f"repos/{REPO}/issues/{pn}/comments?per_page=100")
+              decisions, first_review, review_cnt, actors = _scan_decisions(comments)
+
+              first_commit, commit_count = "", 0
+              try:
+                  pcs = gh(f"repos/{REPO}/pulls/{pn}/commits?per_page=100")
+                  if pcs:
+                      commit_count = len(pcs)
+                      first_commit = pcs[0]["commit"]["author"]["date"]
+              except Exception:
+                  pass
+
+              merged_ts = p.get("merged_at") or ""
+              created = p.get("created_at", "")
+              decision_ts = decisions[-1][0] if decisions else ""
+              decision = decisions[-1][1] if decisions else ""
+              release_ts = ""
+              if merged_ts:
+                  for rt in rel_times:
+                      if rt and rt >= merged_ts:
+                          release_ts = rt
+                          break
+
+              if release_ts:
+                  status = "released"
+              elif merged_ts:
+                  status = "merged"
+              elif p.get("state") == "closed":
+                  status = "closed"
+              elif decision == "APPROVE":
+                  status = "approved_wait_merge"
+              elif decision == "REQUEST_CHANGES":
+                  status = "changes_requested"
+              elif first_review:
+                  status = "review"
+              else:
+                  status = "developing"
+
+              issue_created = issue["created_at"] if issue else ""
+              records.append({
+                  "rec_type": "pipeline", "unit": f"pr-{pn}", "repo": REPO,
+                  "issue_number": str(issue_n or ""), "pr_number": str(pn),
+                  "title": (p.get("title") or "").replace("\n", " ")[:120],
+                  "status": status, "stage": STAGE_MAP[status],
+                  "session_id": f"{REPO}-issue-{issue_n}" if issue_n else "",
+                  "review_session": f"{REPO}-pr-{pn}",
+                  "actors": ",".join(sorted(actors)),
+                  "issue_created": issue_created, "first_commit": first_commit,
+                  "pr_created": created, "first_review": first_review,
+                  "decision_ts": decision_ts, "decision": decision,
+                  "merged_ts": merged_ts, "release_ts": release_ts,
+                  "dev_min": _minutes(issue_created, created),
+                  "review_min": _minutes(created, decision_ts),
+                  "wait_merge_min": _minutes(decision_ts, merged_ts),
+                  "total_min": _minutes(issue_created, merged_ts or ""),
+                  "commit_count": str(commit_count),
+                  "review_comment_count": str(review_cnt),
+                  "review_rounds": str(len(decisions)),
+              })
+
+          for i in issues:
+              n = i["number"]
+              if n in pr_of_issue:
+                  continue
+              has_branch = f"agentteam/issue-{n}" in branches
+              status = "developing" if has_branch else "issue_open"
+              records.append({
+                  "rec_type": "pipeline", "unit": f"issue-{n}", "repo": REPO,
+                  "issue_number": str(n), "pr_number": "",
+                  "title": (i.get("title") or "").replace("\n", " ")[:120],
+                  "status": status, "stage": STAGE_MAP[status],
+                  "session_id": f"{REPO}-issue-{n}", "review_session": "", "actors": "",
+                  "issue_created": i.get("created_at", ""),
+                  "first_commit": "", "pr_created": "", "first_review": "",
+                  "decision_ts": "", "decision": "", "merged_ts": "", "release_ts": "",
+                  "dev_min": "", "review_min": "", "wait_merge_min": "", "total_min": "",
+                  "commit_count": "0", "review_comment_count": "0", "review_rounds": "0",
+              })
+
+          if not records:
+              print("no records"); raise SystemExit(0)
+
+          from aliyun.log import LogClient, LogItem, PutLogsRequest
+          c = LogClient(os.environ["SLS_ENDPOINT"],
+                        os.environ["ALIYUN_ACCESS_KEY_ID"],
+                        os.environ["ALIYUN_ACCESS_KEY_SECRET"])
+          now = int(time.time())
+          items = []
+          for r in records:
+              it = LogItem()
+              it.set_time(now)
+              it.set_contents([(k, str(v)) for k, v in r.items()])
+              items.append(it)
+          res = c.put_logs(PutLogsRequest(os.environ["SLS_PROJECT"],
+                                          os.environ["SLS_LOGSTORE"],
+                                          "pipeline-sync", "github-actions", items))
+          print(f"synced {len(records)} records, sls={res.get_request_id()}")
+          PYEOF
