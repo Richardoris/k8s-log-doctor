@@ -31,11 +31,13 @@ jobs:
 
           # 跳过 CI/文档类提交：消息以 ci:/docs: 开头，或变更全在 .github/ 下
           msg = (os.environ.get("COMMIT_MSG") or "").strip()
-          files = []
-          for k in ("ADDED_FILES", "MODIFIED_FILES", "REMOVED_FILES"):
-              files += json.loads(os.environ.get(k) or "[]")
           if msg.lower().startswith(("ci:", "docs:")):
               print("skip: ci/docs commit"); raise SystemExit(0)
+          files = []
+          for k in ("ADDED_FILES", "MODIFIED_FILES", "REMOVED_FILES"):
+              parsed = json.loads(os.environ.get(k) or "null")
+              if parsed:
+                  files += parsed
           if files and all(f.startswith(".github/") for f in files):
               print("skip: .github-only changes"); raise SystemExit(0)
 
