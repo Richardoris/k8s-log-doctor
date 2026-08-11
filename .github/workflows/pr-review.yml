@@ -146,5 +146,5 @@ jobs:
               body: `🤖 **AI Code Review**\n\n${review}`
             });
 
-      # Auto-merge is handled by the Team Leader via GitHub MCP
-      # after review completion and APPROVE decision.
+      # Merge is performed by a HUMAN only. Branch protection on main
+      # requires 1 approving review; the AI team never calls merge_pull_request.
