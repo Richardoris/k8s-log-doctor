@@ -295,6 +295,39 @@ pytest tests/ -v
 
 欢迎提交 Issue 和 Pull Request！
 
+## 🤖 自动化研发流水线
+
+本项目已接入 GitHub Actions + AgentTeams AI 自动化研发流水线。当你在 Issues 中提交新需求后，AgentTeams AI 团队会自动完成：需求分析 → 方案设计 → 开发（创建特性分支并提交变更）→ 四维审查（代码审查 / 安全审查 / 测试构建审查 / 部署风险审查），人类 approve 后 merge，merge 后自动发布 Release。
+
+### 工作流概览
+
+| 工作流文件 | 名称 | 职责 |
+|-----------|------|------|
+| issue-intake.yml | Issue Intake | Issue 创建/重开时自动触发 AgentTeams 研发流水线，分配开发任务 |
+| pr-review.yml | PR Auto Review | PR 创建时自动触发四维 AI 审查（代码/安全/测试构建/部署风险）并评论审查结论 |
+| auto-release.yml | Auto Release | 代码合并到 main 后自动创建 patch 版本 Release |
+| pipeline-sync.yml | Pipeline Sync | 定时将流水线状态同步到阿里云 SLS，实现全链路可观测 |
+
+### 端到端流水线
+
+```mermaid
+flowchart TD
+    A["👤 用户提交 Issue"] --> B["📥 Issue Intake<br/>(issue-intake.yml)"]
+    B --> C["📋 需求分析<br/>(AgentTeams AI)"]
+    C --> D["🏗️ 方案设计<br/>(AgentTeams AI)"]
+    D --> E["🛠️ 开发 & 提交<br/>(特性分支)"]
+    E --> F["🔀 创建 Pull Request"]
+    F --> G["🤖 PR Auto Review<br/>(pr-review.yml)"]
+    G --> G1["🔍 代码审查"]
+    G --> G2["🔒 安全审查"]
+    G --> G3["🧪 测试构建审查"]
+    G --> G4["🚀 部署风险审查"]
+    G1 & G2 & G3 & G4 --> H{"✅ 人类 Approve"}
+    H -->|Merge| I["📦 Auto Release<br/>(auto-release.yml)"]
+    H -->|Request Changes| E
+    I --> J["📊 Pipeline Sync → 阿里云 SLS<br/>(pipeline-sync.yml)"]
+```
+
 ## 📄 许可证
 
 MIT License
