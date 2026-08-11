@@ -1,0 +1,64 @@
+name: Auto Release (merge main)
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create patch release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ github.event.head_commit.id }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          PUSHER: ${{ github.event.pusher.name }}
+        run: |
+          # 跳过探活心跳提交
+          if echo "${{ github.event.head_commit.message }}" | grep -q "mcp probe heartbeat"; then
+            echo "skip: probe heartbeat"
+            exit 0
+          fi
+          python3 <<'PYEOF'
+          import json, os, re, urllib.request
+
+          token = os.environ["GH_TOKEN"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          api = "https://api.github.com"
+          gh_headers = {"Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github+json"}
+
+          def gh(path, data=None, method=None):
+              req = urllib.request.Request(
+                  f"{api}/{path}",
+                  data=json.dumps(data).encode() if data is not None else None,
+                  headers=gh_headers, method=method or ("POST" if data is not None else "GET"))
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.loads(r.read())
+
+          tags = gh(f"repos/{repo}/tags?per_page=100")
+          nums = []
+          for t in tags:
+              m = re.search(r"(\d+)\.(\d+)\.(\d+)", t.get("name", ""))
+              if m:
+                  nums.append(tuple(int(x) for x in m.groups()))
+          major, minor, patch = max(nums) if nums else (0, 0, 0)
+          tag = f"v{major}.{minor}.{patch + 1}"
+
+          sha = (os.environ.get("COMMIT_SHA") or "")[:8]
+          msg = (os.environ.get("COMMIT_MSG") or "").splitlines()[0][:100]
+          pusher = os.environ.get("PUSHER") or ""
+          rel = gh(f"repos/{repo}/releases", {
+              "tag_name": tag,
+              "name": f"{tag} — 自动发布",
+              "body": (f"由 GitHub Actions 自动创建（人类 merge PR 后触发上线）。\n\n"
+                       f"- 最新提交: {sha} {msg}\n- 推送人: {pusher}"),
+              "draft": False,
+              "prerelease": False,
+          })
+          print("Release created:", tag, rel.get("html_url"))
+          PYEOF
