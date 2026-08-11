@@ -17,7 +17,9 @@ jobs:
           COMMIT_SHA: ${{ github.event.head_commit.id }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
           PUSHER: ${{ github.event.pusher.name }}
-          CHANGED_FILES: ${{ toJSON(concat(github.event.head_commit.added, github.event.head_commit.modified, github.event.head_commit.removed)) }}
+          ADDED_FILES: ${{ toJSON(github.event.head_commit.added) }}
+          MODIFIED_FILES: ${{ toJSON(github.event.head_commit.modified) }}
+          REMOVED_FILES: ${{ toJSON(github.event.head_commit.removed) }}
         run: |
           # 跳过探活心跳提交
           if echo "${{ github.event.head_commit.message }}" | grep -q "mcp probe heartbeat"; then
@@ -29,7 +31,9 @@ jobs:
 
           # 跳过 CI/文档类提交：消息以 ci:/docs: 开头，或变更全在 .github/ 下
           msg = (os.environ.get("COMMIT_MSG") or "").strip()
-          files = json.loads(os.environ.get("CHANGED_FILES") or "[]")
+          files = []
+          for k in ("ADDED_FILES", "MODIFIED_FILES", "REMOVED_FILES"):
+              files += json.loads(os.environ.get(k) or "[]")
           if msg.lower().startswith(("ci:", "docs:")):
               print("skip: ci/docs commit"); raise SystemExit(0)
           if files and all(f.startswith(".github/") for f in files):
