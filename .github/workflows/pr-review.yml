@@ -25,7 +25,7 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           SESSION_ID: ${{ github.repository }}-pr-${{ github.event.pull_request.number }}
         run: |
-          API_URL="http://gateway.at-cn-9yo4wornw01.agentteams.aliyuncs.com/api/console/chat"
+          API_URL="http://gateway.at-cn-9yo4wornw01.agentteams.aliyuncs.com/tl/api/console/chat"
           MAX_POLLS=40
           POLL_INTERVAL=30
 
